@@ -20,6 +20,7 @@ import { wechatAppRoutes } from "./routes/wechat-app.js";
 import { defaultApiCacheControl } from "./middleware/cache-control.js";
 import { sessionActorMiddleware } from "../lib/session-actor.js";
 import { healthRoutes } from "./routes/health.js";
+import { sesInboundRoutes } from "./routes/ses-inbound.js";
 import { aiToolsRoutes } from "./routes/ai-tools.js";
 import { actionsRoutes } from "./routes/actions.js";
 import { appsRoutes, subscribeCatalogChanges } from "./routes/apps.js";
@@ -151,6 +152,7 @@ export function buildApp(
   api.use("*", sessionActorMiddleware(deps.db));
 
   api.route("/", healthRoutes(deps));
+  api.route("/", sesInboundRoutes(deps));
   api.route("/", uptimeRoutes());
   api.route("/", buildInfoRoutes(deps));
   api.route("/", diagnosisRoutes(deps));

@@ -1516,7 +1516,8 @@ async function main() {
   const channelAgentOf = byChannel(channelRecords, accountAgentOf);
   const hookAgentOf = byAccount(accounts, accountAgentOf, channelAgentOf);
   const { RomeCloudMailProvider } = await import("./lib/rome-cloud-mail.js");
-  const mailProvider = new RomeCloudMailProvider();
+  const sesMail = (await import("./lib/ses-mail.js")).createSesMail();
+  const mailProvider = sesMail?.provider ?? new RomeCloudMailProvider();
   registerBuiltinConnections(connectionRegistry, {
     settingsRepo,
     chatSettings,
@@ -1552,6 +1553,8 @@ async function main() {
       });
     },
     mailProvider,
+    // With SES there is no Rome Cloud account to ask for the guardian's address.
+    ...(sesMail ? { emailOwnerEmailResolver: async () => sesMail.guardianEmail } : {}),
     // Keep the prompt-builder's "our own inbox address" ref pointed at the
     // current email epoch (birth, relock/re-authorize, Disconnected rebuild).
     onEmailAdapterBuilt: (adapter) => {
@@ -1978,6 +1981,19 @@ async function main() {
       feedback: feedbackClient,
       provisionAfterLink: () => provisionAfterLink(),
       autoConnectEmail: () => connectEmailWithoutClick("seat-created"),
+      ...(sesMail?.ses
+        ? {
+            sesMailInbound: (rawBody: string) =>
+              sesMail.ses!.handleSns(rawBody, async (body, signature) => {
+                const email = emailConnection(connectionRegistry, channelOf);
+                if (!email) return { status: "skipped", reason: "channel_inactive" };
+                return (await connectionRegistry.ingest(email.id, {
+                  rawBody: body,
+                  signature,
+                })) as { status: string; reason?: string };
+              }),
+          }
+        : {}),
       nodeDevices,
       channelsService,
       chatSettings,

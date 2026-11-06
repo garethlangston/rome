@@ -172,6 +172,8 @@ export interface ApiDeps {
   /** Connects the Rome Cloud email inbox unless an email connection exists.
    *  Never rejects. */
   autoConnectEmail?: () => Promise<void>;
+  /** Handles one SNS POST for SES inbound mail. Absent unless ROME_MAIL_PROVIDER=ses. */
+  sesMailInbound?: (rawBody: string) => Promise<{ status: number; body: string }>;
   computerUse: Pick<ComputerUseService, "getStatus">;
   /** The WeChat app on WeChat's own desktop. Null while WeChat is disabled. */
   wechatApp: Pick<WechatApp, "status" | "install" | "start"> | null;

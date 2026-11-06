@@ -11,6 +11,10 @@ on:
         description: "Tag, branch or commit to build (e.g. v1.1.171)"
         required: true
         default: v1.1.171
+      version:
+        description: "Optional image tag and ROME_VERSION override (e.g. 1.1.180-ses.1); skips the :latest tag"
+        required: false
+        default: ""
 
 concurrency:
   group: selfhost-image
@@ -47,7 +51,7 @@ jobs:
           echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
           echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           ref="${{ inputs.ref }}"
-          if [[ "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then v="${ref#v}"; else v="0.0.0-fork.$(git rev-parse --short HEAD)"; fi
+          if [[ -n "${{ inputs.version }}" ]]; then v="${{ inputs.version }}"; elif [[ "$ref" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then v="${ref#v}"; else v="0.0.0-fork.$(git rev-parse --short HEAD)"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
@@ -58,7 +62,7 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ghcr.io/${{ steps.m.outputs.owner }}/rome:latest
+            ${{ inputs.version == '' && format('ghcr.io/{0}/rome:latest', steps.m.outputs.owner) || '' }}
             ghcr.io/${{ steps.m.outputs.owner }}/rome:${{ steps.m.outputs.sha }}
             ghcr.io/${{ steps.m.outputs.owner }}/rome:${{ steps.m.outputs.version }}
           labels: |
