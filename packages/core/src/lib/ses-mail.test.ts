@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createSign } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it, rs } from "@rstest/core";
@@ -96,6 +96,9 @@ describe("verifySnsSignature", () => {
     }
   });
 });
+
+const SES_ID = "010b01a1b2243b0d-aaaa-bbbb-cccc-000000";
+const SES_ALIAS = `${SES_ID}@${REGION}.amazonses.com`;
 
 const baseEnv = {
   ROME_MAIL_PROVIDER: "ses",
@@ -196,17 +199,23 @@ describe("outbound MIME", () => {
 });
 
 describe("SesMailProvider.handleSns", () => {
-  function setup(verifySns = async () => {}) {
+  function setup(verifySns = async () => {}, raw: () => Buffer = rawMime) {
     const sent: unknown[] = [];
+    const storePath = join(mkdtempSync(join(tmpdir(), "ses-store-")), "s.json");
     const fetchSpy = rs.fn(async () => new Response("ok"));
     const ses = new SesMailProvider(createConfig(), {
-      ses: { send: async (c) => void sent.push(c.input) },
-      s3: { send: async () => ({ Body: { transformToByteArray: async () => rawMime() } }) },
+      ses: {
+        send: async (c) => {
+          sent.push(c.input);
+          return { MessageId: SES_ID };
+        },
+      },
+      s3: { send: async () => ({ Body: { transformToByteArray: async () => raw() } }) },
       verifySns,
       fetch: fetchSpy as unknown as typeof fetch,
-      storePath: join(mkdtempSync(join(tmpdir(), "ses-store-")), "s.json"),
+      storePath,
     });
-    return { ses, sent, fetchSpy };
+    return { ses, sent, fetchSpy, storePath };
   }
   function createConfig() {
     return { address: "computer@gareths.cloud", topicArn: TOPIC, bucket: "bucket", region: REGION };
@@ -285,5 +294,57 @@ describe("SesMailProvider.handleSns", () => {
     expect((await ses.listMessages()).messages.map((m) => m.providerMessageId)).toContain(
       result.messageId,
     );
+  });
+
+  describe("SES Message-ID alias", () => {
+    const received = {
+      notificationType: "Received",
+      mail: { messageId: "sesid" },
+      receipt: receipt(),
+    };
+    const inboundNote = JSON.stringify({
+      Type: "Notification",
+      TopicArn: TOPIC,
+      Message: JSON.stringify(received),
+    });
+
+    async function replyThreadId(headers: string) {
+      const { ses } = setupWithSent();
+      const sent = await ses.send({ to: "gareth@gmail.com", subject: "Hi", text: "yo" });
+      const ingest = rs.fn(async () => ({ status: "dispatched" }));
+      await ses.handleSns(inboundNote, ingest);
+      return { sent, ses, event: JSON.parse((ingest.mock.calls[0] as unknown as string[])[0]) };
+
+      function setupWithSent() {
+        return setup(
+          async () => {},
+          () => rawMime(headers),
+        );
+      }
+    }
+
+    it("stores the alias from the SES MessageId and resolves it", async () => {
+      const { sent, ses } = await replyThreadId("");
+      const msg = await ses.getMessage(SES_ALIAS);
+      expect(msg.id).toBe(sent.messageId);
+    });
+
+    it("threads a reply whose In-Reply-To is the SES alias onto our thread", async () => {
+      const { sent, event } = await replyThreadId(`In-Reply-To: <${SES_ALIAS}>\r\n`);
+      expect(event.threadId).toBe(sent.threadId);
+    });
+
+    it("falls back to References when In-Reply-To is unknown", async () => {
+      const { sent, event } = await replyThreadId(
+        `In-Reply-To: <unknown@x>\r\nReferences: <root@x> <${SES_ALIAS}>\r\n`,
+      );
+      expect(event.threadId).toBe(sent.threadId);
+    });
+
+    it("loads an older store without aliases", async () => {
+      const { ses, storePath } = setup();
+      writeFileSync(storePath, JSON.stringify({ inboundSecret: "s", messages: {} }));
+      await expect(ses.provision()).resolves.toMatchObject({ inboundSecret: "s" });
+    });
   });
 });
