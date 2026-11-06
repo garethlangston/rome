@@ -41,6 +41,8 @@ const PUBLIC_API_PATHS = [
   "/api/onboard/*",
   "/api/instance/enroll/*",
   "/api/oauth/*",
+  // SES inbound mail via SNS; the route verifies the SNS signature itself.
+  "/api/mail/ses/inbound",
   // The connect return leg. The desktop shell hands provider sign-in to the
   // system browser (the Electron window has no platform authenticator, so a
   // passkey second factor cannot complete there), and that browser carries no
