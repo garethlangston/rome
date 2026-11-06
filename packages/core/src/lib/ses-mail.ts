@@ -122,6 +122,9 @@ interface StoredMessage {
 interface StoreData {
   inboundSecret: string;
   messages: Record<string, StoredMessage>;
+  /** SES's own Message-ID (`<id>@<region>.amazonses.com`) -> our outbound record id. SES
+   *  replaces the Message-ID we set, so replies cite the SES one. Absent in older stores. */
+  aliases: Record<string, string>;
 }
 
 // shortcut: one JSON file rewritten per message, capped at this many entries; move to the
@@ -165,7 +168,8 @@ export function buildInboundEvent(
     bare(parsed.messageId ?? "") || `${notification.mail?.messageId ?? randomUUID()}@ses-inbound`;
   const inReplyTo = toList(parsed.inReplyTo);
   const references = [...new Set([...toList(parsed.references), ...inReplyTo])];
-  const threadId = threadIdOf(references) ?? references[0] ?? id;
+  // In-Reply-To first, then References newest first.
+  const threadId = threadIdOf([...inReplyTo, ...[...references].reverse()]) ?? references[0] ?? id;
   const authentication = sesAuthentication(notification.receipt);
   const attachments = partsOf(parsed);
   const receivedAt = notification.mail?.timestamp ?? new Date().toISOString();
@@ -283,10 +287,12 @@ export class SesMailProvider implements MailProvider {
 
   private async load(): Promise<StoreData> {
     try {
-      return JSON.parse(await readFile(this.storePath, "utf8")) as StoreData;
+      const data = JSON.parse(await readFile(this.storePath, "utf8")) as StoreData;
+      data.aliases ??= {};
+      return data;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      return { inboundSecret: randomUUID() + randomUUID(), messages: {} };
+      return { inboundSecret: randomUUID() + randomUUID(), messages: {}, aliases: {} };
     }
   }
 
@@ -313,7 +319,8 @@ export class SesMailProvider implements MailProvider {
   }
 
   private async record(id: string): Promise<StoredMessage> {
-    const found = (await this.load()).messages[id];
+    const data = await this.load();
+    const found = data.messages[data.aliases[id] ?? id];
     if (!found) throw new MailProviderError(`message ${id} not found`, 404, "not_found");
     return found;
   }
@@ -366,14 +373,16 @@ export class SesMailProvider implements MailProvider {
       inReplyTo,
       references,
     });
+    let sesMessageId: string | undefined;
     try {
-      await this.ses.send(
+      const out = (await this.ses.send(
         new SendEmailCommand({
           FromEmailAddress: this.config.address,
           Destination: { ToAddresses: to, CcAddresses: cc, BccAddresses: bcc },
           Content: { Raw: { Data: raw } },
         }),
-      );
+      )) as { MessageId?: string } | undefined;
+      sesMessageId = out?.MessageId;
     } catch (err) {
       const e = err as { name?: string; message?: string; $metadata?: { httpStatusCode?: number } };
       throw new MailProviderError(
@@ -384,6 +393,7 @@ export class SesMailProvider implements MailProvider {
     }
     const toAddr = (list: string[]) => list.map((email) => ({ email }));
     await this.update((d) => {
+      if (sesMessageId) d.aliases[`${sesMessageId}@${this.config.region}.amazonses.com`] = id;
       d.messages[id] = {
         id,
         threadId,
@@ -516,9 +526,9 @@ export class SesMailProvider implements MailProvider {
         return { status: 200, body: "ignored" };
       if (action.bucketName !== this.config.bucket) return { status: 403, body: "forbidden" };
       const parsed = await simpleParser(await this.fetchRaw(action.objectKey));
-      const known = (await this.load()).messages;
+      const known = await this.load();
       const { event, record } = buildInboundEvent(notification, parsed, this.config, (refs) =>
-        refs.map((r) => known[r]?.threadId).find(Boolean),
+        refs.map((r) => known.messages[known.aliases[r] ?? r]?.threadId).find(Boolean),
       );
       record.s3Key = action.objectKey;
       const secret = await this.update((d) => {
