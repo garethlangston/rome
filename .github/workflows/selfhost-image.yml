@@ -1,0 +1,65 @@
+# Builds the Rome runtime image from this fork and pushes it to GHCR.
+# Image: ghcr.io/<owner>/rome:latest (and :<short-sha>). linux/amd64 only (OVH VPS).
+name: Self-host image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: selfhost-image
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          lfs: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare Docker runtime workspace
+        run: node scripts/docker/prepare-runtime-workspace.mjs
+
+      - name: Build metadata
+        id: m
+        run: |
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          v=$(node -p "require('./package.json').version" 2>/dev/null || echo 0.0.0)
+          echo "version=${v}-fork.$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .docker/rome-runtime-workspace
+          file: .docker/rome-runtime-workspace/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ghcr.io/${{ steps.m.outputs.owner }}/rome:latest
+            ghcr.io/${{ steps.m.outputs.owner }}/rome:${{ steps.m.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Rome self-host build from ${{ github.repository }}
+          build-args: |
+            ROME_DOCKER_APP_CODE_MODE=compiled
+            ROME_VERSION=${{ steps.m.outputs.version }}
+            ROME_BUILD_SHA=${{ steps.m.outputs.sha }}
+            ROME_BUILD_TIME=${{ steps.m.outputs.time }}
+          cache-from: type=gha,scope=selfhost-amd64
+          cache-to: type=gha,mode=min,scope=selfhost-amd64
