@@ -1627,7 +1627,8 @@ async function main() {
   const channelAgentOf = byChannel(channelRecords, accountAgentOf);
   const hookAgentOf = byAccount(accounts, accountAgentOf, channelAgentOf);
   const { RomeCloudMailProvider } = await import("./connections/kinds/email/rome-cloud-mail.js");
-  const mailProvider = new RomeCloudMailProvider();
+  const mailProvider =
+    (await import("./selfhost/ses-mail.js")).selfhostMailProvider() ?? new RomeCloudMailProvider();
   registerBuiltinConnections(connectionRegistry, {
     settingsRepo,
     chatSettings,
