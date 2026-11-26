@@ -52,12 +52,18 @@ jobs:
 
       - name: Add self-host mail dependencies
         run: |
-          # `pnpm add` re-resolves every importer. First-party apps pin @rome-os/app-web-sdk ^0.3.0 and
-          # @rome-os/app-runtime ^0.9.0, which the workspace versions no longer satisfy, so without this the
-          # lockfile swaps the workspace links for old registry copies (1.1.226: inbox build failed on SDK 0.3.7).
+          # `pnpm add` re-resolves every importer. First-party apps pin @rome-os/app-web-sdk / app-runtime to
+          # ranges the workspace versions no longer satisfy, so a plain `pnpm add` swaps upstream's workspace
+          # links for old registry copies (1.1.226: inbox build failed on SDK 0.3.7). Point the apps at
+          # workspace:* only while resolving, then restore their original specifiers (package.json and
+          # lockfile): packed app bundles must not carry workspace:* (1.1.226-ses.1: 7 first-party apps
+          # failed to install at boot with ERR_PNPM_WORKSPACE_PKG_NOT_FOUND).
           sed -i -E 's#("@rome-os/(app-web-sdk|app-runtime)": )"\^[^"]*"#\1"workspace:*"#' rome_apps/*/package.json example_apps/*/package.json
           pnpm --filter @rome/core add --lockfile-only @aws-sdk/client-s3@^3.1163.0 @aws-sdk/client-sesv2@^3.1163.0 mailparser@^3.14.2 nodemailer@^10.3.1
           pnpm --filter @rome/core add --lockfile-only -D @types/mailparser @types/nodemailer
+          node scripts/selfhost/restore-app-sdk-specifiers.mjs
+          if grep -l '"workspace:' rome_apps/*/package.json; then echo "app package.json still has workspace: specifiers" >&2; exit 1; fi
+          pnpm install --lockfile-only --frozen-lockfile
 
       - name: Prepare Docker runtime workspace
         run: node scripts/docker/prepare-runtime-workspace.mjs
